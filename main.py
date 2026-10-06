@@ -7,13 +7,6 @@ app = FastAPI()
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
-# Актуальные модели Gemini
-MODELS_TO_TRY = [
-    "gemini-2.5-flash",
-    "gemini-3.8-flash",
-    "gemini-2.5-flash-preview",
-]
-
 @app.api_route("/", methods=["GET", "POST"])
 @app.api_route("/webhook", methods=["GET", "POST"])
 async def yandex_dialog_webhook(request: Request):
@@ -40,7 +33,7 @@ async def yandex_dialog_webhook(request: Request):
                 {
                     "parts": [
                         {
-                            "text": f"Ты голосовой ассистент в Яндекс Станции. Ответь кратко (1-2 предложения), четко и без Markdown-символов: {user_text}"
+                            "text": f"Ты голосовой ассистент Алиса на базе Gemini. Ответь кратко (1-2 предложения), четко и без Markdown-символов (*, #): {user_text}"
                         }
                     ]
                 }
@@ -50,25 +43,43 @@ async def yandex_dialog_webhook(request: Request):
         reply_text = None
         last_error = ""
 
-        # Пробуем отправить запрос по очереди в доступные модели
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            for model_name in MODELS_TO_TRY:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            # 1. Сначала пробуем стабильную gemini-3.8-flash
+            candidate_models = ["gemini-3.8-flash"]
+
+            # Дополнительно запрашиваем список поддерживаемых моделей у Google
+            try:
+                list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}"
+                res_list = await client.get(list_url)
+                if res_list.status_code == 200:
+                    models_info = res_list.json().get("models", [])
+                    for m in models_info:
+                        m_name = m.get("name", "").replace("models/", "")
+                        methods = m.get("supportedGenerationMethods", [])
+                        if "generateContent" in methods and m_name not in candidate_models:
+                            candidate_models.append(m_name)
+            except Exception as e:
+                print(f"Error fetching models: {e}")
+
+            # 2. Пробуем модели по очереди
+            for model_name in candidate_models:
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
                 try:
                     res = await client.post(url, json=payload_data)
                     res_json = res.json()
 
                     if res.status_code == 200:
-                        reply_text = res_json["candidates"][0]["content"]["parts"][0]["text"].strip()
+                        parts = res_json["candidates"][0]["content"]["parts"]
+                        reply_text = parts[0]["text"].strip()
                         break
                     else:
                         err_msg = res_json.get("error", {}).get("message", res.text)
                         last_error = f"{model_name}: {err_msg[:80]}"
                 except Exception as e:
-                    last_error = str(e)
+                    last_error = f"{model_name}: {str(e)[:80]}"
 
         if not reply_text:
-            reply_text = f"Нейросеть временно занята. Ошибка: {last_error[:100]}"
+            reply_text = f"Не удалось получить ответ: {last_error[:100]}"
 
     payload = {
         "response": {
