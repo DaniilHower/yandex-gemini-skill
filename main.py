@@ -7,11 +7,11 @@ app = FastAPI()
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
-# Список моделей по приоритету
+# Актуальные модели Gemini
 MODELS_TO_TRY = [
     "gemini-2.5-flash",
     "gemini-3.8-flash",
-    "gemini-2.5-pro",
+    "gemini-2.5-flash-preview",
 ]
 
 @app.api_route("/", methods=["GET", "POST"])
