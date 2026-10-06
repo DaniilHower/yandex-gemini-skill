@@ -29,7 +29,7 @@ async def yandex_dialog_webhook(request: Request):
         reply_text = "Джемини на связи. О чём хотите спросить?"
     else:
         # Прямой запрос к Google Gemini REST API
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={GEMINI_API_KEY}"
         payload_data = {
             "contents": [
                 {
@@ -41,7 +41,6 @@ async def yandex_dialog_webhook(request: Request):
                 }
             ]
         }
-
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 res = await client.post(url, json=payload_data)
