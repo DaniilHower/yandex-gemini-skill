@@ -1,6 +1,5 @@
 import os
 import json
-import asyncio
 import httpx
 from fastapi import FastAPI, Request, Response
 
@@ -29,38 +28,38 @@ async def yandex_dialog_webhook(request: Request):
     if not user_text:
         reply_text = "Джемини на связи. О чём хотите спросить?"
     else:
-        # Прямой запрос к быстрой flash-модели
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+        # Самая быстрая легковесная модель с минимальным временем первого токена
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key={GEMINI_API_KEY}"
+        
         payload_data = {
             "contents": [
                 {
                     "parts": [
                         {
-                            "text": f"Ты голосовой ассистент Яндекс Станции. Ответь максимально кратко (1 предложение, до 15 слов), без Markdown: {user_text}"
+                            "text": f"Ты голосовой ассистент Алиса на базе Gemini. Ответь кратко (1 предложение, до 15 слов), без Markdown: {user_text}"
                         }
                     ]
                 }
             ],
             "generationConfig": {
-                "maxOutputTokens": 60,
-                "temperature": 0.7
+                "maxOutputTokens": 45,
+                "temperature": 0.5
             }
         }
 
         try:
-            # Лимит 2.4 секунды, чтобы Яндекс не разрывал соединение
-            async with httpx.AsyncClient(timeout=2.4) as client:
+            # Таймаут 2.6 сек, чтобы успеть сформировать и отправить JSON до отсечки Яндекса
+            async with httpx.AsyncClient(timeout=2.6) as client:
                 res = await client.post(url, json=payload_data)
                 if res.status_code == 200:
                     res_json = res.json()
                     parts = res_json.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])
-                    reply_text = parts[0].get("text", "").strip() or "Не удалось получить ответ."
+                    reply_text = parts[0].get("text", "").strip() or "Ответ пуст."
                 else:
-                    reply_text = "Нейросеть сейчас думает слишком долго, повторите еще раз."
-        except asyncio.TimeoutError:
-            reply_text = "Нейросеть не успела ответить вовремя, попробуйте спросить снова."
-        except Exception:
-            reply_text = "Произошла ошибка связи с нейросетью."
+                    reply_text = "Нейросеть сейчас перезагружается, повторите попытку через секунду."
+        except Exception as e:
+            print(f"Request timeout/error: {e}")
+            reply_text = "Сервер Gemini долго думает, попробуйте спросить ещё раз."
 
     payload = {
         "response": {
