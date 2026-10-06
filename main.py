@@ -1,16 +1,21 @@
 import os
-from fastapi import FastAPI, Request
-from google import genai
+import json
+import httpx
+from fastapi import FastAPI, Request, Response
 
 app = FastAPI()
 
-# Инициализируем клиент Gemini
-client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
-@app.post("/webhook")
+@app.api_route("/", methods=["GET", "POST"])
+@app.api_route("/webhook", methods=["GET", "POST"])
 async def yandex_dialog_webhook(request: Request):
+    if request.method == "GET":
+        return Response(content='{"status":"ok"}', media_type="application/json")
+
     try:
-        data = await request.json()
+        body_bytes = await request.body()
+        data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
     except Exception:
         data = {}
 
@@ -19,44 +24,54 @@ async def yandex_dialog_webhook(request: Request):
     user_text = user_text.strip()
 
     session = data.get("session", {})
-    session_id = session.get("session_id", "")
-    message_id = session.get("message_id", 0)
-    user_id = session.get("user_id", "")
 
-    # Если это первый вход в навык (команды ещё нет)
     if not user_text:
-        return {
-            "response": {
-                "text": "Джемини на связи. О чём хотите спросить?",
-                "end_session": False
-            },
-            "session": {
-                "session_id": session_id,
-                "message_id": message_id,
-                "user_id": user_id
-            },
-            "version": data.get("version", "1.0")
+        reply_text = "Джемини на связи. О чём хотите спросить?"
+    else:
+        # Прямой запрос к Google Gemini REST API
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+        payload_data = {
+            "contents": [
+                {
+                    "parts": [
+                        {
+                            "text": f"Ты голосовой ассистент в Яндекс Станции. Ответь кратко (1-2 предложения), четко и без Markdown-разметки: {user_text}"
+                        }
+                    ]
+                }
+            ]
         }
 
-    # Запрос к модели Gemini
-    try:
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=user_text,
-        )
-        reply_text = response.text or "Ответ пуст."
-    except Exception as e:
-        reply_text = "Произошла ошибка при обращении к нейросети."
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                res = await client.post(url, json=payload_data)
+                res_json = res.json()
 
-    return {
+                if res.status_code == 200:
+                    reply_text = res_json["candidates"][0]["content"]["parts"][0]["text"].strip()
+                else:
+                    err_msg = res_json.get("error", {}).get("message", res.text)
+                    print(f"Gemini API Error: {res.status_code} - {err_msg}")
+                    reply_text = f"Ошибка Gemini: {err_msg[:120]}"
+        except Exception as e:
+            print(f"Network Error: {e}")
+            reply_text = "Не удалось связаться с сервером Gemini."
+
+    payload = {
         "response": {
             "text": reply_text,
             "end_session": False
         },
         "session": {
-            "session_id": session_id,
-            "message_id": message_id,
-            "user_id": user_id
+            "session_id": session.get("session_id", "default_session"),
+            "message_id": session.get("message_id", 0),
+            "user_id": session.get("user_id", "default_user")
         },
         "version": data.get("version", "1.0")
     }
+
+    return Response(
+        content=json.dumps(payload, ensure_ascii=False),
+        media_type="application/json; charset=utf-8",
+        status_code=200
+    )
