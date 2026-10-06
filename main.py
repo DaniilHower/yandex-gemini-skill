@@ -7,6 +7,13 @@ app = FastAPI()
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
+# Список моделей по приоритету
+MODELS_TO_TRY = [
+    "gemini-2.5-flash",
+    "gemini-3.8-flash",
+    "gemini-2.5-pro",
+]
+
 @app.api_route("/", methods=["GET", "POST"])
 @app.api_route("/webhook", methods=["GET", "POST"])
 async def yandex_dialog_webhook(request: Request):
@@ -28,33 +35,40 @@ async def yandex_dialog_webhook(request: Request):
     if not user_text:
         reply_text = "Джемини на связи. О чём хотите спросить?"
     else:
-        # Прямой запрос к Google Gemini REST API
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={GEMINI_API_KEY}"
         payload_data = {
             "contents": [
                 {
                     "parts": [
                         {
-                            "text": f"Ты голосовой ассистент в Яндекс Станции. Ответь кратко (1-2 предложения), четко и без Markdown-разметки: {user_text}"
+                            "text": f"Ты голосовой ассистент в Яндекс Станции. Ответь кратко (1-2 предложения), четко и без Markdown-символов: {user_text}"
                         }
                     ]
                 }
             ]
         }
-        try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                res = await client.post(url, json=payload_data)
-                res_json = res.json()
 
-                if res.status_code == 200:
-                    reply_text = res_json["candidates"][0]["content"]["parts"][0]["text"].strip()
-                else:
-                    err_msg = res_json.get("error", {}).get("message", res.text)
-                    print(f"Gemini API Error: {res.status_code} - {err_msg}")
-                    reply_text = f"Ошибка Gemini: {err_msg[:120]}"
-        except Exception as e:
-            print(f"Network Error: {e}")
-            reply_text = "Не удалось связаться с сервером Gemini."
+        reply_text = None
+        last_error = ""
+
+        # Пробуем отправить запрос по очереди в доступные модели
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            for model_name in MODELS_TO_TRY:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
+                try:
+                    res = await client.post(url, json=payload_data)
+                    res_json = res.json()
+
+                    if res.status_code == 200:
+                        reply_text = res_json["candidates"][0]["content"]["parts"][0]["text"].strip()
+                        break
+                    else:
+                        err_msg = res_json.get("error", {}).get("message", res.text)
+                        last_error = f"{model_name}: {err_msg[:80]}"
+                except Exception as e:
+                    last_error = str(e)
+
+        if not reply_text:
+            reply_text = f"Нейросеть временно занята. Ошибка: {last_error[:100]}"
 
     payload = {
         "response": {
