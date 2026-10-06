@@ -1,5 +1,6 @@
 import os
 import json
+import asyncio
 import httpx
 from fastapi import FastAPI, Request, Response
 
@@ -28,58 +29,38 @@ async def yandex_dialog_webhook(request: Request):
     if not user_text:
         reply_text = "Джемини на связи. О чём хотите спросить?"
     else:
+        # Прямой запрос к быстрой flash-модели
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
         payload_data = {
             "contents": [
                 {
                     "parts": [
                         {
-                            "text": f"Ты голосовой ассистент Алиса на базе Gemini. Ответь кратко (1-2 предложения), четко и без Markdown-символов (*, #): {user_text}"
+                            "text": f"Ты голосовой ассистент Яндекс Станции. Ответь максимально кратко (1 предложение, до 15 слов), без Markdown: {user_text}"
                         }
                     ]
                 }
-            ]
+            ],
+            "generationConfig": {
+                "maxOutputTokens": 60,
+                "temperature": 0.7
+            }
         }
 
-        reply_text = None
-        last_error = ""
-
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            # 1. Сначала пробуем стабильную gemini-3.8-flash
-            candidate_models = ["gemini-3.8-flash"]
-
-            # Дополнительно запрашиваем список поддерживаемых моделей у Google
-            try:
-                list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}"
-                res_list = await client.get(list_url)
-                if res_list.status_code == 200:
-                    models_info = res_list.json().get("models", [])
-                    for m in models_info:
-                        m_name = m.get("name", "").replace("models/", "")
-                        methods = m.get("supportedGenerationMethods", [])
-                        if "generateContent" in methods and m_name not in candidate_models:
-                            candidate_models.append(m_name)
-            except Exception as e:
-                print(f"Error fetching models: {e}")
-
-            # 2. Пробуем модели по очереди
-            for model_name in candidate_models:
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
-                try:
-                    res = await client.post(url, json=payload_data)
+        try:
+            # Лимит 2.4 секунды, чтобы Яндекс не разрывал соединение
+            async with httpx.AsyncClient(timeout=2.4) as client:
+                res = await client.post(url, json=payload_data)
+                if res.status_code == 200:
                     res_json = res.json()
-
-                    if res.status_code == 200:
-                        parts = res_json["candidates"][0]["content"]["parts"]
-                        reply_text = parts[0]["text"].strip()
-                        break
-                    else:
-                        err_msg = res_json.get("error", {}).get("message", res.text)
-                        last_error = f"{model_name}: {err_msg[:80]}"
-                except Exception as e:
-                    last_error = f"{model_name}: {str(e)[:80]}"
-
-        if not reply_text:
-            reply_text = f"Не удалось получить ответ: {last_error[:100]}"
+                    parts = res_json.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])
+                    reply_text = parts[0].get("text", "").strip() or "Не удалось получить ответ."
+                else:
+                    reply_text = "Нейросеть сейчас думает слишком долго, повторите еще раз."
+        except asyncio.TimeoutError:
+            reply_text = "Нейросеть не успела ответить вовремя, попробуйте спросить снова."
+        except Exception:
+            reply_text = "Произошла ошибка связи с нейросетью."
 
     payload = {
         "response": {
